@@ -9,7 +9,7 @@
 // The turn function takes a speed argument, where positive speeds result in turning left
 // and negative speeds will turn right.
 use oort_api::prelude::*;
-use pidcontrol::PIDController;
+use pidcontrol::{DerivativeParams, IntegralParams, PIDController, ProportionalParams};
 use steering::{TorqueControl, TurnControl};
 use targeting::TargetSystem;
 use weapons::Weapons;
@@ -27,8 +27,24 @@ impl Default for Ship {
 
 impl Ship {
     pub fn new() -> Ship {
-        let angular_velocity_control = PIDController::new(4.0, 1.0, 1.0, 2.0);
-        let turn_control = TorqueControl::new(5.0);
+        //let angular_velocity_control = PIDController::new(3.0, 1.0, 1.0, 2.0);
+
+        let angular_velocity_control = PIDController::new(
+            ProportionalParams {
+                weight: 3.0,
+                pow: 1,
+            },
+            IntegralParams {
+                weight: 1.0,
+                pow: 1,
+                limit: 0.5,
+            },
+            DerivativeParams {
+                weight: 2.0,
+                pow: 1,
+            },
+        );
+        let turn_control = TorqueControl::new(3.0);
         //let turn_control = TurnControl::default();
         let targeting = TargetSystem::new(angular_velocity_control, turn_control);
         let weapons = Weapons::new(targeting, 0.1);
@@ -168,7 +184,7 @@ pub mod targeting {
 
             //debug!("Target Distance: {displacement}");
             debug!("Time to target: {t}");
-            
+
             self.prev_target_velocity = target.velocity;
             target_lead
         }
@@ -195,8 +211,8 @@ pub mod targeting {
         /// an approximation of the time of flight
         fn time_to_target(&self, target: Vec2) -> f64 {
             let displacement = target - position();
-            let t = displacement.length() / BULLET_SPEED;
-            t
+
+            displacement.length() / BULLET_SPEED
         }
     }
 }
@@ -231,50 +247,64 @@ pub mod pidcontrol {
 
     use oort_api::debug;
 
+    pub struct ProportionalParams {
+        pub weight: f64,
+        pub pow: i32,
+    }
+
+    pub struct IntegralParams {
+        pub weight: f64,
+        pub pow: i32,
+        pub limit: f64,
+    }
+
+    pub struct DerivativeParams {
+        pub weight: f64,
+        pub pow: i32,
+    }
+
     /// A standard PID controller
     ///
     /// applies proportional, integral and derivative terms to calculate corrective action.
     pub struct PIDController {
-        proportional_weight: f64,
-        integral_weight: f64,
+        proportional: ProportionalParams,
+        integral: IntegralParams,
+        derivative: DerivativeParams,
         integral_accumulator: f64,
-        integral_accumulator_limit: f64,
         prev_error: f64,
-        derivative_weight: f64,
     }
 
     impl PIDController {
         pub fn new(
-            proportional_weight: f64,
-            integral_weight: f64,
-            integral_accumulator_limit: f64,
-            derivative_weight: f64,
+            proportional: ProportionalParams,
+            integral: IntegralParams,
+            derivative: DerivativeParams,
         ) -> PIDController {
             PIDController {
-                proportional_weight,
-                integral_weight,
+                proportional,
+                integral,
+                derivative,
                 integral_accumulator: f64::default(),
-                integral_accumulator_limit,
                 prev_error: f64::default(),
-                derivative_weight,
             }
         }
 
         /// Calculate the weighted proportional term
         fn term_p(&self, error: f64) -> f64 {
-            let p = self.proportional_weight * error;
+            let error = self.error_pow(error, self.proportional.pow);
+            let p = self.proportional.weight * error;
             debug!("P: {p}");
             p
         }
 
         /// Calculate the weighted integral term
         fn term_i(&mut self, error: f64) -> f64 {
-            let mut i = self.integral_weight * error + self.integral_accumulator;
+            let error = self.error_pow(error, self.integral.pow);
+            let mut i = self.integral.weight * error + self.integral_accumulator;
 
             // Apply anti wind-up logic
-            if i.abs() >= self.integral_accumulator_limit {
-                i = self.integral_accumulator_limit * i.signum();
-            }
+            i = i.clamp(-self.integral.limit, self.integral.limit);
+
             debug!("I: {i}");
             self.integral_accumulator = i;
             i
@@ -282,10 +312,24 @@ pub mod pidcontrol {
 
         /// Calculate the weighted derivative term
         fn term_d(&mut self, error: f64) -> f64 {
-            let d = self.derivative_weight * (self.prev_error - error);
+            let error = self.error_pow(error, self.derivative.pow);
+            let d = self.derivative.weight * (self.prev_error - error);
             debug!("D: {d}");
             self.prev_error = error;
             d
+        }
+
+        /// Apply power to error. accounts for sign change for powers of... powers of two
+        fn error_pow(&self, error: f64, pow: i32) -> f64 {
+            let sign = error.signum();
+
+            let mut error = error.powi(pow);
+
+            if pow % 2 == 0{
+                error *= sign;
+            }
+
+            error
         }
 
         /// Calculate the necessary corrective action to apply to the control variable
