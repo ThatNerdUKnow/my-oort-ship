@@ -26,12 +26,30 @@ impl Ship {
     }
 }
 
+pub mod weapons {
+    use super::targeting::TargetSystem;
+
+    pub struct Weapons {
+        targeting: TargetSystem,
+    }
+
+    impl Weapons {
+        pub fn new(target_system: TargetSystem) -> Self {
+            Weapons {
+                targeting: target_system,
+            }
+        }
+    }
+}
+
 pub mod targeting {
     use oort_api::{
         debug,
-        prelude::{draw_diamond, position, vec2, ScanResult, Vec2},
+        prelude::{angle_diff, draw_diamond, heading, position, vec2, ScanResult, Vec2},
         Message,
     };
+
+    use super::steering::HeadingControl;
 
     use super::{pidcontrol::PIDController, util};
 
@@ -63,13 +81,40 @@ pub mod targeting {
         }
     }
     pub struct TargetSystem {
-        controller: PIDController,
+        angular_velocity_control: PIDController,
+        heading_control: Box<dyn HeadingControl>,
         prev_target_velocity: Vec2,
     }
 
     impl TargetSystem {
+        pub fn new<T: HeadingControl + 'static>(
+            angular_velocity_control: PIDController,
+            heading_control: T,
+        ) -> Self {
+            TargetSystem {
+                angular_velocity_control,
+                heading_control: Box::new(heading_control),
+                prev_target_velocity: Vec2::default(),
+            }
+        }
+
+        /// Calculate target lead and apply turn control
+        pub fn target(&mut self, target: &Target) {
+            let target_lead = self.lead_target(target);
+            let error = self.angle_to_target(target_lead);
+            let speed = self.angular_velocity_control.calculate_correction(error);
+            self.heading_control.turn(speed);
+        }
+
+        fn angle_to_target(&self, target: Vec2) -> f64 {
+            let displacement = target - position();
+            let angle_error = angle_diff(heading(), displacement.angle());
+            debug!("Angle error: {angle_error}");
+            angle_error
+        }
+
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
-        pub fn lead_target(&mut self, target: Target) -> Vec2 {
+        pub fn lead_target(&mut self, target: &Target) -> Vec2 {
             // estimate time term of the third kinematic equation
             let t = self.time_to_target(&target);
 
@@ -100,6 +145,26 @@ pub mod targeting {
             debug!("Target Distance: {displacement}");
             debug!("Time to target: {t}");
             t
+        }
+    }
+}
+
+pub mod radar {
+    use oort_api::prelude::*;
+
+    #[derive(Default)]
+    pub struct Radar;
+
+    impl Radar {
+        pub fn scan() -> Option<ScanResult> {
+            match scan() {
+                Some(t) => Some(t),
+                None => {
+                    let heading = radar_heading() + radar_width();
+                    set_radar_heading(heading);
+                    None
+                }
+            }
         }
     }
 }
@@ -185,6 +250,7 @@ pub mod steering {
         prelude::{angular_velocity, torque, turn},
     };
 
+    /// Use turn control by applying [torque()]
     pub struct TorqueControl {
         angular_velocity_limit: f64,
     }
@@ -199,17 +265,20 @@ pub mod steering {
 
     impl HeadingControl for TorqueControl {
         fn turn(&self, speed: f64) {
+            // enforce angular speed limit
             let mut speed = speed;
             if speed.abs() >= self.angular_velocity_limit {
                 speed = self.angular_velocity_limit
             }
 
+            // determine angular impulse required to achieve desired angular velocity
             let av_difference = speed - angular_velocity();
             debug!("Angular Velocity: {av_difference}");
             torque(av_difference);
         }
     }
 
+    /// Use turn control by applying [turn()]
     #[derive(Default)]
     pub struct TurnControl;
 
