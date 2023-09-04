@@ -28,13 +28,14 @@ impl Ship {
 
 pub mod targeting {
     use oort_api::{
-        prelude::{vec2, ScanResult, Vec2, position, draw_diamond},
-        Message, debug,
+        debug,
+        prelude::{draw_diamond, position, vec2, ScanResult, Vec2},
+        Message,
     };
 
-    use crate::{pidcontrol::PIDController, util};
+    use super::{pidcontrol::PIDController, util};
 
-    const BULLET_SPEED:f64 = 1000.0;
+    const BULLET_SPEED: f64 = 1000.0;
 
     pub struct Target {
         position: Vec2,
@@ -63,20 +64,18 @@ pub mod targeting {
     }
     pub struct TargetSystem {
         controller: PIDController,
-        prev_target_velocity: Vec2
+        prev_target_velocity: Vec2,
     }
 
-    impl TargetSystem{
-
+    impl TargetSystem {
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
-        pub fn lead_target(&mut self, target:Target) -> Vec2{
-
+        pub fn lead_target(&mut self, target: Target) -> Vec2 {
             // estimate time term of the third kinematic equation
-            let t = self.time_to_target(target);
-            
+            let t = self.time_to_target(&target);
+
             // get displacement of target over "t" given current velocity
             let displacement_v = target.velocity * t;
-            
+
             // get target's acceleration
             let target_accel = target.velocity - self.prev_target_velocity;
             self.prev_target_velocity = target.velocity;
@@ -87,17 +86,17 @@ pub mod targeting {
             // combine displacement terms with current target position to get predicted position
             let target_lead = displacement_v + displacement_a + target.position;
 
-            draw_diamond(target_lead, 50.0, util::rgb(255,0,0));
+            draw_diamond(target_lead, 50.0, util::rgb(255, 0, 0));
             target_lead
         }
 
-        /// Given the current distance to the target, return the amount of time it will take for 
+        /// Given the current distance to the target, return the amount of time it will take for
         /// a projectile to reach the target. This doesn't account for the target's velocity or acceleration
         /// because we can only solve for one variable of the kinematic equation at a time. Hence, this only serves as
         /// an approximation of the time of flight
-        fn time_to_target(&self, target:Target) -> f64{
+        fn time_to_target(&self, target: &Target) -> f64 {
             let displacement = target.position - position();
-            let t = displacement / BULLET_SPEED;
+            let t = displacement.length() / BULLET_SPEED;
             debug!("Target Distance: {displacement}");
             debug!("Time to target: {t}");
             t
@@ -176,6 +175,52 @@ pub mod pidcontrol {
             debug!("Correction: {pid}");
             pid
         }
+    }
+}
+
+pub mod steering {
+
+    use oort_api::{
+        debug,
+        prelude::{angular_velocity, torque, turn},
+    };
+
+    pub struct TorqueControl {
+        angular_velocity_limit: f64,
+    }
+
+    impl TorqueControl {
+        pub fn new(angular_velocity_limit: f64) -> TorqueControl {
+            TorqueControl {
+                angular_velocity_limit,
+            }
+        }
+    }
+
+    impl HeadingControl for TorqueControl {
+        fn turn(&self, speed: f64) {
+            let mut speed = speed;
+            if speed.abs() >= self.angular_velocity_limit {
+                speed = self.angular_velocity_limit
+            }
+
+            let av_difference = speed - angular_velocity();
+            debug!("Angular Velocity: {av_difference}");
+            torque(av_difference);
+        }
+    }
+
+    #[derive(Default)]
+    pub struct TurnControl;
+
+    impl HeadingControl for TurnControl {
+        fn turn(&self, speed: f64) {
+            turn(speed)
+        }
+    }
+
+    pub trait HeadingControl {
+        fn turn(&self, speed: f64);
     }
 }
 
