@@ -27,8 +27,8 @@ impl Default for Ship {
 
 impl Ship {
     pub fn new() -> Ship {
-        let angular_velocity_control = PIDController::new(4.0, 1.0, 0.5, 1.0);
-        let turn_control = TorqueControl::new(10.0);
+        let angular_velocity_control = PIDController::new(4.0, 1.0, 1.0, 2.0);
+        let turn_control = TorqueControl::new(5.0);
         //let turn_control = TurnControl::default();
         let targeting = TargetSystem::new(angular_velocity_control, turn_control);
         let weapons = Weapons::new(targeting, 0.1);
@@ -153,21 +153,38 @@ pub mod targeting {
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
         fn lead_target(&mut self, target: &Target) -> Vec2 {
             // estimate time term of the third kinematic equation
-            let t = self.time_to_target(target);
+            let mut t = self.time_to_target(target.position);
 
-            // get displacement of target over "t" given current velocity
-            let displacement_v = target.velocity * t;
+            let mut target_lead = self.lead_target_converge(target, t);
+
+            let mut delta_t = 1.0;
+
+            while delta_t > 0.0 {
+                target_lead = self.lead_target_converge(target, t);
+                let t_prime = self.time_to_target(target_lead);
+                delta_t = t - t_prime;
+                t = t_prime
+            }
+
+            //debug!("Target Distance: {displacement}");
+            debug!("Time to target: {t}");
+            
+            self.prev_target_velocity = target.velocity;
+            target_lead
+        }
+
+        fn lead_target_converge(&self, target: &Target, time: f64) -> Vec2 {
+            // get displacement of target over time given current velocity
+            let displacement_v = target.velocity * time;
 
             // get target's acceleration
             let target_accel = target.velocity - self.prev_target_velocity;
-            self.prev_target_velocity = target.velocity;
 
-            // get displacement of target over "t" given current acceleration
-            let displacement_a = target_accel * t.powi(2) / 2.0;
+            // get displacement of target over time given current acceleration
+            let displacement_a = target_accel * time.powi(2) / 2.0;
 
             // combine displacement terms with current target position to get predicted position
             let target_lead = displacement_v + displacement_a + target.position;
-
             draw_diamond(target_lead, 20.0, util::rgb(255, 0, 0));
             target_lead
         }
@@ -176,11 +193,9 @@ pub mod targeting {
         /// a projectile to reach the target. This doesn't account for the target's velocity or acceleration
         /// because we can only solve for one variable of the kinematic equation at a time. Hence, this only serves as
         /// an approximation of the time of flight
-        fn time_to_target(&self, target: &Target) -> f64 {
-            let displacement = target.position - position();
+        fn time_to_target(&self, target: Vec2) -> f64 {
+            let displacement = target - position();
             let t = displacement.length() / BULLET_SPEED;
-            debug!("Target Distance: {displacement}");
-            debug!("Time to target: {t}");
             t
         }
     }
@@ -290,7 +305,7 @@ pub mod steering {
 
     use oort_api::{
         debug,
-        prelude::{angular_velocity, torque, turn, max_angular_acceleration},
+        prelude::{angular_velocity, max_angular_acceleration, torque, turn},
     };
 
     /// Use turn control by applying [torque()]
