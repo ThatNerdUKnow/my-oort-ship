@@ -9,34 +9,70 @@
 // The turn function takes a speed argument, where positive speeds result in turning left
 // and negative speeds will turn right.
 use oort_api::prelude::*;
+use pidcontrol::PIDController;
+use steering::{TorqueControl, TurnControl};
+use targeting::TargetSystem;
+use weapons::Weapons;
 
-pub struct Ship {}
+pub struct Ship {
+    weapons: Weapons,
+}
+
+/// This implementation only serves to get clippy to shut up
+impl Default for Ship {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Ship {
     pub fn new() -> Ship {
-        Ship {}
+        let angular_velocity_control = PIDController::new(4.0, 1.0, 0.5, 1.0);
+        let turn_control = TorqueControl::new(10.0);
+        //let turn_control = TurnControl::default();
+        let targeting = TargetSystem::new(angular_velocity_control, turn_control);
+        let weapons = Weapons::new(targeting, 0.1);
+        Ship { weapons }
     }
 
     pub fn tick(&mut self) {
         // Hint: "angle_diff(heading(), (target() - position()).angle())"
         // returns the direction your ship needs to turn to face the target.
-        torque(10.0);
-
-        fire(0);
+        self.weapons.search_and_destroy();
     }
 }
 
 pub mod weapons {
+
+    use oort_api::prelude::fire;
+
+    use super::radar::Radar;
+
     use super::targeting::TargetSystem;
 
     pub struct Weapons {
         targeting: TargetSystem,
+        radar: Radar,
+        fire_angle_threshold: f64,
     }
 
     impl Weapons {
-        pub fn new(target_system: TargetSystem) -> Self {
+        pub fn new(target_system: TargetSystem, fire_angle_threshold: f64) -> Self {
             Weapons {
                 targeting: target_system,
+                radar: Radar::default(),
+                fire_angle_threshold,
+            }
+        }
+
+        pub fn search_and_destroy(&mut self) {
+            if let Some(target) = self.radar.scan() {
+                let target = self.targeting.target(&target.into());
+                let angle = self.targeting.angle_to_target(target);
+
+                if angle.abs() <= self.fire_angle_threshold {
+                    fire(0);
+                }
             }
         }
     }
@@ -99,14 +135,15 @@ pub mod targeting {
         }
 
         /// Calculate target lead and apply turn control
-        pub fn target(&mut self, target: &Target) {
+        pub fn target(&mut self, target: &Target) -> Vec2 {
             let target_lead = self.lead_target(target);
             let error = self.angle_to_target(target_lead);
             let speed = self.angular_velocity_control.calculate_correction(error);
             self.heading_control.turn(speed);
+            target_lead
         }
 
-        fn angle_to_target(&self, target: Vec2) -> f64 {
+        pub fn angle_to_target(&self, target: Vec2) -> f64 {
             let displacement = target - position();
             let angle_error = angle_diff(heading(), displacement.angle());
             debug!("Angle error: {angle_error}");
@@ -114,9 +151,9 @@ pub mod targeting {
         }
 
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
-        pub fn lead_target(&mut self, target: &Target) -> Vec2 {
+        fn lead_target(&mut self, target: &Target) -> Vec2 {
             // estimate time term of the third kinematic equation
-            let t = self.time_to_target(&target);
+            let t = self.time_to_target(target);
 
             // get displacement of target over "t" given current velocity
             let displacement_v = target.velocity * t;
@@ -131,7 +168,7 @@ pub mod targeting {
             // combine displacement terms with current target position to get predicted position
             let target_lead = displacement_v + displacement_a + target.position;
 
-            draw_diamond(target_lead, 50.0, util::rgb(255, 0, 0));
+            draw_diamond(target_lead, 20.0, util::rgb(255, 0, 0));
             target_lead
         }
 
@@ -152,13 +189,19 @@ pub mod targeting {
 pub mod radar {
     use oort_api::prelude::*;
 
+    use super::util;
+
     #[derive(Default)]
     pub struct Radar;
 
     impl Radar {
-        pub fn scan() -> Option<ScanResult> {
+        pub fn scan(&self) -> Option<ScanResult> {
             match scan() {
-                Some(t) => Some(t),
+                Some(t) => {
+                    let angle = util::angle_to_target_global(t.position);
+                    set_radar_heading(angle);
+                    Some(t)
+                }
                 None => {
                     let heading = radar_heading() + radar_width();
                     set_radar_heading(heading);
@@ -173,7 +216,7 @@ pub mod pidcontrol {
 
     use oort_api::debug;
 
-    /// A standard linear PID controller
+    /// A standard PID controller
     ///
     /// applies proportional, integral and derivative terms to calculate corrective action.
     pub struct PIDController {
@@ -247,7 +290,7 @@ pub mod steering {
 
     use oort_api::{
         debug,
-        prelude::{angular_velocity, torque, turn},
+        prelude::{angular_velocity, torque, turn, max_angular_acceleration},
     };
 
     /// Use turn control by applying [torque()]
@@ -265,16 +308,10 @@ pub mod steering {
 
     impl HeadingControl for TorqueControl {
         fn turn(&self, speed: f64) {
-            // enforce angular speed limit
-            let mut speed = speed;
-            if speed.abs() >= self.angular_velocity_limit {
-                speed = self.angular_velocity_limit
-            }
-
-            // determine angular impulse required to achieve desired angular velocity
-            let av_difference = speed - angular_velocity();
-            debug!("Angular Velocity: {av_difference}");
-            torque(av_difference);
+            let max = max_angular_acceleration() * self.angular_velocity_limit;
+            torque(
+                (speed.clamp(-max, max) - angular_velocity()).signum() * max_angular_acceleration(),
+            );
         }
     }
 
@@ -294,7 +331,14 @@ pub mod steering {
 }
 
 pub mod util {
+    use oort_api::prelude::*;
+
     pub fn rgb(r: u8, g: u8, b: u8) -> u32 {
         (r as u32) << 16 | (g as u32) << 8 | b as u32
+    }
+
+    pub fn angle_to_target_global(target: Vec2) -> f64 {
+        let displacement = target - position();
+        displacement.angle()
     }
 }
