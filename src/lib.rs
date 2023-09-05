@@ -97,7 +97,7 @@ pub mod weapons {
 pub mod targeting {
     use oort_api::{
         debug,
-        prelude::{angle_diff, draw_diamond, heading, position, vec2, ScanResult, Vec2},
+        prelude::{angle_diff, draw_diamond, heading, position, vec2, ScanResult, Vec2, velocity},
         Message,
     };
 
@@ -168,16 +168,20 @@ pub mod targeting {
 
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
         fn lead_target(&mut self, target: &Target) -> Vec2 {
+            
+            let bullet_vector  = util::angle_to_vector(heading()) * BULLET_SPEED + velocity();
+
             // estimate time term of the third kinematic equation
-            let mut t = self.time_to_target(target.position);
+            let mut t = self.time_to_target(target.position, bullet_vector);
 
             let mut target_lead = self.lead_target_converge(target, t);
 
             let mut delta_t = 1.0;
 
+
             while delta_t > 0.0 {
                 target_lead = self.lead_target_converge(target, t);
-                let t_prime = self.time_to_target(target_lead);
+                let t_prime = self.time_to_target(target_lead, bullet_vector);
                 delta_t = t - t_prime;
                 t = t_prime
             }
@@ -209,10 +213,10 @@ pub mod targeting {
         /// a projectile to reach the target. This doesn't account for the target's velocity or acceleration
         /// because we can only solve for one variable of the kinematic equation at a time. Hence, this only serves as
         /// an approximation of the time of flight
-        fn time_to_target(&self, target: Vec2) -> f64 {
+        fn time_to_target(&self, target: Vec2, projectile_vector: Vec2) -> f64 {
             let displacement = target - position();
 
-            displacement.length() / BULLET_SPEED
+            displacement.length() / projectile_vector.length()
         }
     }
 }
@@ -390,6 +394,7 @@ pub mod steering {
 }
 
 pub mod util {
+
     use oort_api::prelude::*;
 
     pub fn rgb(r: u8, g: u8, b: u8) -> u32 {
@@ -399,5 +404,9 @@ pub mod util {
     pub fn angle_to_target_global(target: Vec2) -> f64 {
         let displacement = target - position();
         displacement.angle()
+    }
+
+    pub fn angle_to_vector(angle: f64)->Vec2{
+        vec2(angle.cos(), angle.sin())
     }
 }
