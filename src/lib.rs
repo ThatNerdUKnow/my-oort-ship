@@ -10,12 +10,14 @@
 // and negative speeds will turn right.
 use oort_api::prelude::*;
 use pidcontrol::{DerivativeParams, IntegralParams, PIDController, ProportionalParams};
+use radar::Radar;
 use steering::{TorqueControl, TurnControl};
 use targeting::TargetSystem;
 use weapons::Weapons;
 
 pub struct Ship {
     weapons: Weapons,
+    radar: Radar,
 }
 
 /// This implementation only serves to get clippy to shut up
@@ -48,13 +50,24 @@ impl Ship {
         //let turn_control = TurnControl::default();
         let targeting = TargetSystem::new(angular_velocity_control, turn_control);
         let weapons = Weapons::new(targeting, 0.1);
-        Ship { weapons }
+        Ship {
+            weapons,
+            radar: Radar::default(),
+        }
     }
 
     pub fn tick(&mut self) {
         // Hint: "angle_diff(heading(), (target() - position()).angle())"
         // returns the direction your ship needs to turn to face the target.
-        self.weapons.search_and_destroy();
+
+        if let Some(target) = self.radar.scan() {
+            self.weapons.search_and_destroy(&target.clone().into());
+
+            let velocity_diff = target.velocity - velocity();
+
+            accelerate(velocity_diff);
+
+        }
     }
 }
 
@@ -62,13 +75,13 @@ pub mod weapons {
 
     use oort_api::prelude::fire;
 
-    use super::radar::Radar;
+    use super::targeting::Target;
+
 
     use super::targeting::TargetSystem;
 
     pub struct Weapons {
         targeting: TargetSystem,
-        radar: Radar,
         fire_angle_threshold: f64,
     }
 
@@ -76,19 +89,16 @@ pub mod weapons {
         pub fn new(target_system: TargetSystem, fire_angle_threshold: f64) -> Self {
             Weapons {
                 targeting: target_system,
-                radar: Radar::default(),
                 fire_angle_threshold,
             }
         }
 
-        pub fn search_and_destroy(&mut self) {
-            if let Some(target) = self.radar.scan() {
-                let target = self.targeting.target(&target.into());
-                let angle = self.targeting.angle_to_target(target);
+        pub fn search_and_destroy(&mut self, target: &Target) {
+            let target = self.targeting.target(target);
+            let angle = self.targeting.angle_to_target(target);
 
-                if angle.abs() <= self.fire_angle_threshold {
-                    fire(0);
-                }
+            if angle.abs() <= self.fire_angle_threshold {
+                fire(0);
             }
         }
     }
@@ -97,7 +107,7 @@ pub mod weapons {
 pub mod targeting {
     use oort_api::{
         debug,
-        prelude::{angle_diff, draw_diamond, heading, position, vec2, ScanResult, Vec2, velocity},
+        prelude::{angle_diff, draw_diamond, heading, position, vec2, velocity, ScanResult, Vec2, draw_line},
         Message,
     };
 
@@ -161,23 +171,26 @@ pub mod targeting {
 
         pub fn angle_to_target(&self, target: Vec2) -> f64 {
             let displacement = target - position();
-            let angle_error = angle_diff(heading(), displacement.angle());
+            let bullet_vector = self.bullet_vector();
+            let angle_error = angle_diff(bullet_vector.angle(), displacement.angle());
             debug!("Angle error: {angle_error}");
             angle_error
         }
 
+        fn bullet_vector(&self) ->Vec2{
+             util::angle_to_vector(heading()) * BULLET_SPEED + velocity()
+        }
         /// Use the third kinematic equation to predict the position of a target given its velocity and acceleration
         fn lead_target(&mut self, target: &Target) -> Vec2 {
-            
-            let bullet_vector  = util::angle_to_vector(heading()) * BULLET_SPEED + velocity();
+            let bullet_vector = self.bullet_vector();
 
+            draw_line(position(), position() + bullet_vector, util::rgb(0, 0, 255));
             // estimate time term of the third kinematic equation
             let mut t = self.time_to_target(target.position, bullet_vector);
 
             let mut target_lead = self.lead_target_converge(target, t);
 
             let mut delta_t = 1.0;
-
 
             while delta_t > 0.0 {
                 target_lead = self.lead_target_converge(target, t);
@@ -329,7 +342,7 @@ pub mod pidcontrol {
 
             let mut error = error.powi(pow);
 
-            if pow % 2 == 0{
+            if pow % 2 == 0 {
                 error *= sign;
             }
 
@@ -406,7 +419,7 @@ pub mod util {
         displacement.angle()
     }
 
-    pub fn angle_to_vector(angle: f64)->Vec2{
+    pub fn angle_to_vector(angle: f64) -> Vec2 {
         vec2(angle.cos(), angle.sin())
     }
 }
